@@ -30,6 +30,19 @@ struct MixerSettings: View {
             }
 
             Section {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Don’t see the Damper icon in the menu bar?")
+                        .foregroundStyle(.secondary)
+                    Button("Open Menu Bar Settings") { model.openMenuBarSettings() }
+                }
+                if AppUpdater.shared.isAvailable { UpdateControls() }
+                LabeledContent("Damper", value: Self.versionLabel)
+                Link("Source on GitHub", destination: Self.sourceURL)
+            }
+
+            // Last, because it is the only section that grows. A long list then pushes nothing else
+            // out of reach.
+            Section {
                 let saved = model.savedApplications
                 if saved.isEmpty {
                     Text("Apps you adjust or ignore are listed here.")
@@ -46,22 +59,12 @@ struct MixerSettings: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-
-            Section {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Don’t see the Damper icon in the menu bar?")
-                        .foregroundStyle(.secondary)
-                    Button("Open Menu Bar Settings") { model.openMenuBarSettings() }
-                }
-                if AppUpdater.shared.isAvailable { UpdateControls() }
-                LabeledContent("Damper", value: Self.versionLabel)
-                Link("Source on GitHub", destination: Self.sourceURL)
-            }
         }
         .formStyle(.grouped)
-        // The window fits its content up to the cap. Past that it still scrolls, with no bar in the
-        // way: "never" also covers the Always Show Scroll Bars setting, which "hidden" does not.
-        .scrollIndicators(.never)
+        // The window fits its content up to the cap, with no scroll bar: "never" also covers the
+        // Always Show Scroll Bars setting, which "hidden" does not. Past the cap the content scrolls,
+        // and the bar follows that setting so there is a sign of more below.
+        .scrollIndicators(contentHeight > Self.maxHeight ? .automatic : .never)
         .onScrollGeometryChange(for: CGFloat.self) { geometry in
             geometry.contentSize.height + geometry.contentInsets.top + geometry.contentInsets.bottom
         } action: { _, height in
