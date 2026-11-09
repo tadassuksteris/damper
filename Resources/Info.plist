@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+    <key>CFBundleDevelopmentRegion</key><string>en</string>
+    <key>CFBundleExecutable</key><string>Damper</string>
+    <key>CFBundleIdentifier</key><string>io.github.tadassuksteris.damper</string>
+    <key>CFBundleName</key><string>Damper</string>
+    <key>CFBundleDisplayName</key><string>Damper</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
+    <key>CFBundleIconName</key><string>AppIcon</string>
+    <key>CFBundleShortVersionString</key><string>0.1.0</string>
+    <key>CFBundleVersion</key><string>1</string>
+    <key>LSMinimumSystemVersion</key><string>26.0</string>
+    <key>LSUIElement</key><true/>
+    <key>NSHighResolutionCapable</key><true/>
+    <key>NSPrincipalClass</key><string>NSApplication</string>
+    <key>SUFeedURL</key><string>https://github.com/tadassuksteris/damper/releases/latest/download/appcast.xml</string>
+    <key>SUEnableInstallerLauncherService</key><true/>
+    <key>SUEnableDownloaderService</key><true/>
+    <key>SUEnableAutomaticChecks</key><true/>
+    <key>SUAllowsAutomaticUpdates</key><false/>
+    <key>NSAudioCaptureUsageDescription</key><string>Damper processes system audio on this Mac to lower or mute individual apps. Audio is never saved or sent.</string>
+</dict></plist>

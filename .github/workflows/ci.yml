@@ -1,0 +1,81 @@
+# Compilation and pure tests only. Runners have no audio devices or permission grants, so
+# Core Audio tap and permission behavior on macOS 26 stays a manual pre-release check.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: macos-26
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Show toolchain
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+
+      - name: Build with the oldest installed Xcode
+        run: |
+          oldest="$(ls -d /Applications/Xcode_*.app | sort -V | head -n 1)"
+          export DEVELOPER_DIR="$oldest/Contents/Developer"
+          xcodebuild -version
+          swift --version
+          swift build --scratch-path .build-oldest
+
+      - name: Build without the private permission check
+        run: |
+          swift build --scratch-path .build-no-private -Xswiftc -DDAMPER_NO_PRIVATE_TCC
+          if grep -aq TCCAccessPreflight .build-no-private/debug/Damper; then
+            echo "The build still contains the private permission check." >&2
+            exit 1
+          fi
+
+      - name: Build debug
+        run: swift build
+
+      - name: Test
+        run: swift test
+
+      - name: Build release
+        run: swift build --configuration release
+
+      - name: Check the audio check is not in the release binary
+        run: |
+          binary="$(swift build --configuration release --show-bin-path)/Damper"
+          symbols="$(nm "$binary")"
+          if grep -E 'AudioIntegrationCheck|AudioCheckSupport|AudioMeasurement' <<<"$symbols"; then
+            echo "Release binary contains audio check symbols." >&2
+            exit 1
+          fi
+
+      - name: Package release
+        run: ./scripts/build.sh release
+
+      - name: Check entitlements
+        run: |
+          entitlements="$(codesign -d --entitlements - --xml "build/Damper.app")"
+          if ! grep -q 'com.apple.security.app-sandbox' <<<"$entitlements"; then
+            echo "App Sandbox entitlement is missing." >&2
+            exit 1
+          fi
+          if grep -q 'network' <<<"$entitlements"; then
+            echo "A network entitlement is present." >&2
+            exit 1
+          fi
+
+      - name: Build audio fixtures without launching them
+        run: ./scripts/build-audio-fixtures.sh

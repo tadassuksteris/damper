@@ -1,0 +1,39 @@
+name: Bug report
+description: Something isn't working right.
+labels: ["bug"]
+body:
+  - type: input
+    id: macos-version
+    attributes:
+      label: macOS version
+      placeholder: "27.2"
+    validations:
+      required: true
+  - type: input
+    id: app-version
+    attributes:
+      label: App version
+      description: Shown at the bottom of Settings. Add the commit if you built from source.
+      placeholder: 0.1.0, commit abc1234
+    validations:
+      required: true
+  - type: input
+    id: output
+    attributes:
+      label: Output device
+      placeholder: AirPods Pro, built-in speakers, a USB interface...
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what you got. Mention the apps involved and anything that happened just before, like switching outputs or waking from sleep. The README lists known limits.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics (optional)
+      description: Output of `/Applications/Damper.app/Contents/MacOS/Damper --diagnostics`. It can include your device names and the apps you run, so remove anything you don't want public. Please don't attach audio.
+      render: json

@@ -1,0 +1,182 @@
+# A pushed tag like v0.1.0 signs, notarizes and publishes a release, then updates the Homebrew tap.
+# Running it by hand from the Actions tab builds an unsigned copy as an artifact, to check the build
+# without publishing.
+#
+# Repository secrets:
+#   DEVELOPER_ID_CERTIFICATE_BASE64, DEVELOPER_ID_CERTIFICATE_PASSWORD
+#       The Developer ID Application certificate as a base64 .p12, and its password.
+#   NOTARY_API_KEY_BASE64, NOTARY_API_KEY_ID, NOTARY_API_ISSUER_ID
+#       An App Store Connect API key as base64, with its IDs.
+#   SPARKLE_PUBLIC_KEY, SPARKLE_PRIVATE_KEY
+#       The update signing keys from Sparkle's generate_keys, in .build/artifacts/sparkle/Sparkle/bin
+#       after a build. Export the private key with generate_keys -x and keep a backup: without it,
+#       installed copies can't be updated.
+#   HOMEBREW_TAP_TOKEN
+#       A GitHub token that can write to the homebrew-tap repository.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  PUBLISH: ${{ github.event_name == 'push' }}
+
+jobs:
+  release:
+    runs-on: macos-26
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Work out the version
+        run: |
+          if [[ "$PUBLISH" == true ]]; then version="${GITHUB_REF_NAME#v}"
+          else version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Resources/Info.plist)"; fi
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "The version must look like 1.2.3, from a tag like v1.2.3. Got: $version" >&2
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "ZIP=Damper-$version.zip" >> "$GITHUB_ENV"
+
+      - name: Test
+        run: swift test
+
+      - name: Import the signing certificate
+        if: env.PUBLISH == 'true'
+        env:
+          CERTIFICATE: ${{ secrets.DEVELOPER_ID_CERTIFICATE_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.DEVELOPER_ID_CERTIFICATE_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password="$(uuidgen)"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          base64 -D <<<"$CERTIFICATE" > "$RUNNER_TEMP/certificate.p12"
+          security import "$RUNNER_TEMP/certificate.p12" -P "$CERTIFICATE_PASSWORD" -k "$keychain" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" login.keychain-db
+          rm "$RUNNER_TEMP/certificate.p12"
+
+      - name: Build
+        env:
+          DAMPER_VERSION: ${{ env.VERSION }}
+          DAMPER_BUILD_NUMBER: ${{ github.run_number }}
+          DAMPER_SIGNING_IDENTITY: ${{ env.PUBLISH == 'true' && 'Developer ID Application' || '-' }}
+          DAMPER_SPARKLE_PUBLIC_KEY: ${{ env.PUBLISH == 'true' && secrets.SPARKLE_PUBLIC_KEY || '' }}
+        run: |
+          if [[ "$PUBLISH" == true && -z "$DAMPER_SPARKLE_PUBLIC_KEY" ]]; then
+            echo "SPARKLE_PUBLIC_KEY is not set, so the release would have no working updates." >&2
+            exit 1
+          fi
+          ./scripts/build.sh release
+
+      - name: Notarize
+        if: env.PUBLISH == 'true'
+        env:
+          API_KEY: ${{ secrets.NOTARY_API_KEY_BASE64 }}
+          API_KEY_ID: ${{ secrets.NOTARY_API_KEY_ID }}
+          API_ISSUER_ID: ${{ secrets.NOTARY_API_ISSUER_ID }}
+        run: |
+          base64 -D <<<"$API_KEY" > "$RUNNER_TEMP/notary.p8"
+          ditto -c -k --keepParent build/Damper.app "$RUNNER_TEMP/notarize.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" --wait \
+            --key "$RUNNER_TEMP/notary.p8" --key-id "$API_KEY_ID" --issuer "$API_ISSUER_ID"
+          xcrun stapler staple build/Damper.app
+          rm "$RUNNER_TEMP/notary.p8"
+
+      - name: Package
+        run: |
+          mkdir dist
+          ditto -c -k --keepParent build/Damper.app "dist/$ZIP"
+
+      - name: Upload the unsigned copy
+        if: env.PUBLISH != 'true'
+        uses: actions/upload-artifact@v6
+        with:
+          name: Damper-unsigned
+          path: dist/${{ env.ZIP }}
+
+      - name: Create the update feed
+        if: env.PUBLISH == 'true'
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          .build/artifacts/sparkle/Sparkle/bin/generate_appcast --ed-key-file - \
+            --download-url-prefix "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/" \
+            -o dist/appcast.xml dist <<<"$SPARKLE_PRIVATE_KEY"
+
+      - name: Check the update signature
+        if: env.PUBLISH == 'true'
+        # The feed's signature must verify against the key inside the app, or installed copies
+        # would reject this update and every later one.
+        run: |
+          cat > "$RUNNER_TEMP/verify.swift" <<'SWIFT'
+          import CryptoKit
+          import Foundation
+          let arguments = CommandLine.arguments
+          guard let key = Data(base64Encoded: arguments[1]), let signature = Data(base64Encoded: arguments[2]),
+                let publicKey = try? Curve25519.Signing.PublicKey(rawRepresentation: key),
+                let archive = FileManager.default.contents(atPath: arguments[3]),
+                publicKey.isValidSignature(signature, for: archive) else {
+              print("The update signature doesn't match the app's SUPublicEDKey. Check the Sparkle key secrets.")
+              exit(1)
+          }
+          SWIFT
+          key="$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' build/Damper.app/Contents/Info.plist)"
+          signature="$(xmllint --xpath 'string(//enclosure/@*[local-name()="edSignature"])' dist/appcast.xml)"
+          swift "$RUNNER_TEMP/verify.swift" "$key" "$signature" "dist/$ZIP"
+
+      - name: Publish the release
+        if: env.PUBLISH == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" "dist/$ZIP" dist/appcast.xml --title "Damper $VERSION" --generate-notes
+
+  # A job of its own, so a failure here can be re-run without building and publishing again. It
+  # hashes the published zip, which is the file Homebrew will download.
+  tap:
+    needs: release
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Update the Homebrew tap
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          gh release download "$GITHUB_REF_NAME" --pattern "Damper-$version.zip" --dir "$RUNNER_TEMP"
+          sha="$(sha256sum "$RUNNER_TEMP/Damper-$version.zip" | cut -d ' ' -f 1)"
+          git clone "https://x-access-token:$TAP_TOKEN@github.com/${GITHUB_REPOSITORY_OWNER}/homebrew-tap.git" "$RUNNER_TEMP/tap"
+          cd "$RUNNER_TEMP/tap"
+          # The tap starts out empty, with no main branch to build on.
+          if git rev-parse -q --verify origin/main >/dev/null; then git checkout -q -B main origin/main; fi
+          mkdir -p Casks
+          sed -e "s/@VERSION@/$version/" -e "s/@SHA256@/$sha/" "$GITHUB_WORKSPACE/packaging/damper.rb.in" > Casks/damper.rb
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Casks/damper.rb
+          # Nothing to commit when a re-run finds the cask already up to date.
+          git diff --cached --quiet || git commit -m "damper $version"
+          git push origin HEAD:main
